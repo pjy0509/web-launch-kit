@@ -123,18 +123,43 @@ flowchart TD
 import LaunchKit from 'web-launch-kit'
 
 const openedBy = await LaunchKit.app({
-  android: {
-    scheme: 'myapp://profile/42',
-    packageName: 'com.example.myapp',
-    allowAppStore: true,
-    allowWebStore: true,
-  },
-  ios: {
-    universal: 'https://example.com/profile/42',
-    scheme: 'myapp://profile/42',
-    bundleId: 'com.example.myapp', // resolved to a trackId for the store fallback
-    allowAppStore: true,
-  },
+	android: {
+		scheme: 'ms-excel://',
+		packageName: 'com.microsoft.office.excel',
+		intent: 'intent://#Intent;scheme=ms-excel;package=com.microsoft.office.excel;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.microsoft.office.excel;end',
+		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
+		allowAppStore: true,
+		allowWebStore: false,
+		timeout: 1000,
+	},
+	ios: {
+		scheme: 'ms-excel://',
+		bundleId: 'com.microsoft.Office.Excel',
+		trackId: '586683407',
+		universal: 'https://1drv.ms/x/c/7f3d9a02c81b4e65/IQBk2wYfN8pTQ5vHmR9xLzUcAeXtP0jWnK4oD3iFgZs7bQY?e=Rk9mZ2',
+		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
+		allowAppStore: true,
+		allowWebStore: false,
+		timeout: 2000,
+	},
+	windows: {
+		scheme: 'ms-excel://',
+		packageFamilyName: 'Microsoft.Office.Desktop_8wekyb3d8bbwe',
+		productId: 'cfq7ttc0pr28',
+		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
+		allowAppStore: true,
+		allowWebStore: false,
+		timeout: 750,
+	},
+	macos: {
+		scheme: 'ms-excel://',
+		bundleId: 'com.microsoft.Excel',
+		trackId: '462058435',
+		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
+		allowAppStore: true,
+		allowWebStore: false,
+		timeout: 750,
+	}
 })
 
 console.log(openedBy) // "universal" | "scheme" | "intent" | "fallback" | "store"
