@@ -295,7 +295,6 @@ export function getTrackId(bundleId: string): string | undefined {
     }
 }
 
-
 export function getProductIdAsync(packageFamilyName: string): Promise<string | undefined> {
     const cache: string | undefined = idCache.get(BUNDLE_ID, packageFamilyName);
 
