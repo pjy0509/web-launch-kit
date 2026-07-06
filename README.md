@@ -28,13 +28,12 @@ The bundle is self-contained (OS/locale detection is inlined) — no peer script
 | `LaunchKit.telephone(options?)` | `Promise<void>` | Open the dialer (`tel:`) |
 | `LaunchKit.message(options?)` | `Promise<void>` | Open the SMS composer (`sms:`) |
 | `LaunchKit.mail(options?)` | `Promise<void>` | Open the mail composer (`mailto:`) |
+| `LaunchKit.map(options?)` | `Promise<void>` | Open a map by query, coordinate, or directions; native app per-OS with a Google Maps web fallback |
 | `LaunchKit.filepicker(options?)` | `Promise<File[]>` | Pick files or a directory (File System Access API, with input fallback) |
 | `LaunchKit.setting(type?)` | `Promise<void>` | Open a system-settings pane where supported |
 | `LaunchKit.utils` | object | `canOpenIntent` / `canOpenUniversal` / `canOpenSetting` getters, plus async `getTrackId` / `getProductId` |
 
 `AppOpenedBy` is one of: `"scheme"`, `"universal"`, `"intent"`, `"fallback"`, `"store"`.
-
-Named exports `getProductId` / `getTrackId` (synchronous store-id lookups) are also available.
 
 ---
 
@@ -43,7 +42,6 @@ Named exports `getProductId` / `getTrackId` (synchronous store-id lookups) are a
 `app()` takes per-platform options and only acts on the block matching the current
 OS. It builds an ordered list of candidates and tries each until one launches the
 app, resolving with the route that worked.
-
 ```mermaid
 flowchart TD
     A([LaunchKit.app called]) --> B{Detect OS via PlatformKit}
@@ -60,14 +58,14 @@ flowchart TD
         A2 --> A3{"scheme given, but intent missing?"}
         A3 -->|yes| A4["createIntentURL:<br/>scheme + packageName + fallback"]
         A3 -->|no| A5
-        A4 --> A5["Priority list:<br/>intent (if canOpenIntent) ⭢ scheme ⭢ fallback<br/>⭢ app store ⭢ web store (by packageName)"]
+        A4 --> A5["Priority list:<br/>intent (if canOpenIntent) ⭢ scheme (if canOpenScheme)<br/>⭢ fallback ⭢ app store (if canOpenScheme) ⭢ web store"]
     end
 
     subgraph IOS["ios · resolveOptions"]
         I1{"bundleId given, but trackId missing?"}
         I1 -->|yes| I2["getTrackId:<br/>iTunes lookup API (bundleId ⭢ trackId)"]
         I1 -->|no| I3
-        I2 --> I3["Priority list:<br/>universal (if iOS ≥ 9) ⭢ scheme ⭢ fallback<br/>⭢ app store ⭢ web store (by trackId)"]
+        I2 --> I3["Priority list:<br/>universal (if canOpenUniversal) ⭢ scheme (if canOpenScheme)<br/>⭢ fallback ⭢ app store (if canOpenScheme) ⭢ web store"]
     end
 
     subgraph WIN["windows · resolveOptions"]
@@ -123,43 +121,18 @@ flowchart TD
 import LaunchKit from 'web-launch-kit'
 
 const openedBy = await LaunchKit.app({
-	android: {
-		scheme: 'ms-excel://',
-		packageName: 'com.microsoft.office.excel',
-		intent: 'intent://#Intent;scheme=ms-excel;package=com.microsoft.office.excel;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.microsoft.office.excel;end',
-		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
-		allowAppStore: true,
-		allowWebStore: false,
-		timeout: 1000,
-	},
-	ios: {
-		scheme: 'ms-excel://',
-		bundleId: 'com.microsoft.Office.Excel',
-		trackId: '586683407',
-		universal: 'https://1drv.ms/x/c/7f3d9a02c81b4e65/IQBk2wYfN8pTQ5vHmR9xLzUcAeXtP0jWnK4oD3iFgZs7bQY?e=Rk9mZ2',
-		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
-		allowAppStore: true,
-		allowWebStore: false,
-		timeout: 2000,
-	},
-	windows: {
-		scheme: 'ms-excel://',
-		packageFamilyName: 'Microsoft.Office.Desktop_8wekyb3d8bbwe',
-		productId: 'cfq7ttc0pr28',
-		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
-		allowAppStore: true,
-		allowWebStore: false,
-		timeout: 750,
-	},
-	macos: {
-		scheme: 'ms-excel://',
-		bundleId: 'com.microsoft.Excel',
-		trackId: '462058435',
-		fallback: 'https://www.microsoft.com/ko-kr/microsoft-365/excel',
-		allowAppStore: true,
-		allowWebStore: false,
-		timeout: 750,
-	}
+  android: {
+    scheme: 'myapp://profile/42',
+    packageName: 'com.example.myapp',
+    allowAppStore: true,
+    allowWebStore: true,
+  },
+  ios: {
+    universal: 'https://example.com/profile/42',
+    scheme: 'myapp://profile/42',
+    bundleId: 'com.example.myapp', // resolved to a trackId for the store fallback
+    allowAppStore: true,
+  },
 })
 
 console.log(openedBy) // "universal" | "scheme" | "intent" | "fallback" | "store"
@@ -169,7 +142,12 @@ Per-platform fields: Android accepts `intent` / `scheme` / `packageName` / `fall
 (scheme ⇄ intent are derived from each other); iOS accepts `universal` / `scheme` /
 `bundleId` / `trackId`; Windows accepts `scheme` / `packageFamilyName` / `productId`;
 macOS accepts `scheme` / `bundleId` / `trackId`. All accept `fallback`, `timeout`,
-`allowAppStore`, `allowWebStore`.
+`allowAppStore`, `allowWebStore`. 
+
+Android and iOS additionally accept
+`assumeAllowedInApp` — declare it `true` only when your app is whitelisted by a
+partner-gated in-app browser (e.g. Weibo) so scheme / universal-link candidates are
+kept there; it never bypasses hard-blocked webviews or OS version requirements.
 
 ## Communication intents
 
@@ -199,6 +177,33 @@ const files = await LaunchKit.filepicker({ accept: ['image/*', '.pdf'], multiple
 // A directory (recursive; webkitRelativePath is populated)
 const tree = await LaunchKit.filepicker({ directory: true })
 ```
+
+## Maps
+
+`map()` takes an intent — a search query, a coordinate, or a route — and builds the
+right URL for the current OS (`maps://` on iOS/macOS, `geo:` on Android, `bingmaps:`
+on Windows), falling back to Google Maps on the web.
+
+```js
+import LaunchKit from 'web-launch-kit'
+
+// Search for a place
+await LaunchKit.map({ query: 'Seoul City Hall' })
+
+// Show a coordinate with a labelled pin
+await LaunchKit.map({ coordinate: [37.5665, 126.9780], label: 'Seoul City Hall', zoom: 15 })
+
+// Directions (origin defaults to current location when omitted)
+await LaunchKit.map({ directions: { destination: 'Seoul Station', origin: [37.5665, 126.9780] } })
+```
+
+Provide exactly one of `query` / `coordinate` / `directions`; when several are set,
+`directions` wins, then `coordinate`, then `query`. A `label` with `coordinate`
+renders a named pin on iOS/macOS/Windows and is ignored on Android, where `geo:`
+handlers other than Google Maps misread the labelled form as a search. Android's
+`geo:` scheme also has no standard directions support, so routes use the Google Maps
+fallback there, and on Windows the discontinued Maps app means `bingmaps:` usually
+defers to the web fallback too.
 
 ## System settings
 
@@ -239,3 +244,10 @@ const { default: LaunchKit } = require('web-launch-kit')
   exports are synchronous (blocking XHR) and intended for internal/legacy use.
 - **Store-id lookups depend on remote APIs** (iTunes Lookup, Microsoft display catalog)
   and are cached for one hour; failures resolve to `undefined` rather than throwing.
+- **In-app browsers are gated per candidate.** Inside webviews that block launches
+  (WeChat, QQ, Qzone, Baidu; Weibo unless partnered), dead candidates — custom schemes,
+  `intent://`, and store schemes like `market://` — are skipped up front instead of
+  burning their timeouts, so the chain falls straight through to `fallback` / web store
+  (the only routes that work there). Whitelisted partner apps opt back in with
+  `assumeAllowedInApp: true`.
+- **`map()` uses the per-OS timeout** for each candidate.

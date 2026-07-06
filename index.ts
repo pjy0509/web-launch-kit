@@ -123,12 +123,14 @@ export declare interface AppInfo {
 export declare interface AndroidAppInfo extends AppInfo {
     intent?: URLCandidate;
     packageName?: string;
+    assumeAllowedInApp?: boolean;
 }
 
 export declare interface IOSAppInfo extends AppInfo {
     universal?: URLCandidate;
     bundleId?: string;
     trackId?: string;
+    assumeAllowedInApp?: boolean;
 }
 
 export declare interface WindowsAppInfo extends AppInfo {
@@ -173,6 +175,18 @@ export declare interface FilepickerOptions {
     startIn?: OpenPickerStartIn;
 }
 
+export declare interface MapOptions {
+    query?: string;
+    coordinate?: [number, number];
+    label?: string;
+    directions?: {
+        destination: string | [number, number];
+        origin?: string | [number, number];
+    };
+    zoom?: number;
+    fallback?: URLStringOrFallback;
+}
+
 /**
  * Auxiliary helpers for {@link LaunchKitInstance} — environment probes and store-id lookups.
  */
@@ -181,13 +195,20 @@ interface LaunchKitUtils {
      * Whether Android `intent://` links can launch apps in the current browser.
      *
      * @remarks
-     * `false` outside Android, and for browsers with known intent regressions
-     * (certain Firefox/Opera ranges) or in-app browsers (Facebook, Instagram, WeChat, TikTok).
+     * `false` outside Android, for browsers with known intent regressions
+     * (certain Firefox/Opera ranges), and inside in-app browsers where intent
+     * cannot launch (Facebook, Instagram, TikTok, WeChat, QQ, Qzone, Baidu, Weibo).
      */
     get canOpenIntent(): boolean;
 
     /**
-     * Whether iOS universal links are available (iOS 9+).
+     * Whether iOS universal links are available in the current environment.
+     *
+     * @remarks
+     * `false` outside iOS or below iOS 9, and inside in-app browsers known to block
+     * universal links: WeChat below 7.0.5, QQ, QQBrowser, UC Browser, and Qzone.
+     * Weibo is partner-gated — this getter reports the non-partner default; whitelisted
+     * apps opt back in per call via `AppInfo.assumeAllowedInApp` instead.
      */
     get canOpenUniversal(): boolean;
 
@@ -220,7 +241,7 @@ interface LaunchKitUtils {
      *
      * @remarks
      * Uses `fetch` and caches results for one hour; failures resolve to `undefined`
-     * rather than throwing. Market and language are derived from {@link LocaleKit}.
+     * rather than throwing. Market and language are derived from the bundled locale detection.
      */
     getProductId(packageFamilyName: string): Promise<string | undefined>;
 }
@@ -351,6 +372,36 @@ export interface LaunchKitInstance {
     mail(options?: MailOptions): Promise<void>;
 
     /**
+     * Opens a map at a location, search query, or route — building the right URL for
+     * the current OS and falling back to Google Maps on the web.
+     *
+     * @param options - The map intent: a `query`, a `coordinate`, or `directions`, plus optional `zoom` / `label`.
+     * @returns Resolves once a map URL opens, or rejects when every candidate fails.
+     *
+     * @remarks
+     * Takes an intent rather than a URL and generates the per-OS form: `maps://` on
+     * iOS/macOS, `geo:` on Android, `bingmaps:` on Windows, with a Google Maps web URL
+     * as the shared fallback. Android's `geo:` scheme has no standard directions support,
+     * so routes are only expressed through the Google Maps fallback. On Windows the native
+     * Maps app was discontinued, so `bingmaps:` usually fails and the web fallback takes over.
+     * `label` renders a named pin on iOS/macOS/Windows; it is ignored on Android,
+     * where non-Google `geo:` handlers misread the labelled form as a search query.
+     *
+     * @example
+     * ```ts
+     * // Search for a place
+     * await LaunchKit.map({ query: 'Seoul City Hall' })
+     *
+     * // Show a coordinate with a labelled pin
+     * await LaunchKit.map({ coordinate: [37.5665, 126.9780], label: 'Seoul City Hall', zoom: 15 })
+     *
+     * // Directions (origin defaults to current location when omitted)
+     * await LaunchKit.map({ directions: { destination: 'Seoul Station', origin: [37.5665, 126.9780] } })
+     * ```
+     */
+    map(options?: MapOptions): Promise<void>;
+
+    /**
      * Opens a file or directory picker and resolves with the chosen files.
      *
      * @param options - `accept` filters, `directory` for folder selection, `multiple`, `id`, and `startIn`.
@@ -432,7 +483,7 @@ const ANDROID_DEFAULT_TIMEOUT: number = 1000;
 const IOS_DEFAULT_TIMEOUT: number = 2000;
 const WINDOWS_DEFAULT_TIMEOUT: number = 750;
 const MACOS_DEFAULT_TIMEOUT: number = 750;
-const SETTING_DEFAULT_TIMEOUT: number = 750;
+const DEFAULT_TIMEOUT: number = 750;
 const NAVIGATOR: Navigator | undefined = globalThis.navigator;
 let CLEANUP_INPUT_ELEMENT: null | (() => void) = null;
 
@@ -472,7 +523,7 @@ function getDefaultTimeout(): number {
         case 'macos':
             return MACOS_DEFAULT_TIMEOUT;
         default:
-            return WINDOWS_DEFAULT_TIMEOUT;
+            return DEFAULT_TIMEOUT;
     }
 }
 
@@ -580,8 +631,8 @@ function restoreFocus(): boolean {
     return hasFocus(topDocument);
 }
 
-function stripURL<T>(value: T | undefined): (T extends URL ? string : T) | undefined {
-    return typeof value === 'undefined' ? undefined : isURL(value) ? value.toString() as T extends URL ? string : T : value as Exclude<T, URL>;
+function stripURL<T>(value: T): (T extends URL ? string : T) {
+    return isURL(value) ? value.toString() as T extends URL ? string : T : value as Exclude<T, URL>;
 }
 
 function resolveFocusEventConfig(): FocusEventConfig {
@@ -809,6 +860,8 @@ function resolveOptions(option: AppOpenOptions): [[AppOpenedBy, URLStringOrFallb
     let fallback: URLStringOrFallback | undefined;
     let allowAppStore: boolean | undefined;
     let allowWebStore: boolean | undefined;
+    let allowScheme: boolean;
+    let assumeAllowedInApp: boolean;
     let timeout: number | undefined;
 
     // android
@@ -834,8 +887,10 @@ function resolveOptions(option: AppOpenOptions): [[AppOpenedBy, URLStringOrFallb
             scheme = stripURL(option.android.scheme);
             fallback = stripURL(option.android.fallback);
             packageName = option.android.packageName;
+            assumeAllowedInApp = option.android.assumeAllowedInApp === true;
             allowAppStore = option.android.allowAppStore;
             allowWebStore = option.android.allowWebStore;
+            allowScheme = canOpenScheme(assumeAllowedInApp);
             timeout = option.android.timeout;
 
             // intent ⭢ scheme / packageName / fallback
@@ -855,10 +910,10 @@ function resolveOptions(option: AppOpenOptions): [[AppOpenedBy, URLStringOrFallb
 
             // intent ⭢ scheme ⭢ fallback ⭢ app store ⭢ web store
             if (typeof intent !== 'undefined' && canOpenIntent()) resolved.push(['intent', intent]);
-            if (typeof scheme !== 'undefined') resolved.push(['scheme', scheme]);
+            if (typeof scheme !== 'undefined' && allowScheme) resolved.push(['scheme', scheme]);
             if (typeof fallback !== 'undefined') resolved.push(['fallback', fallback]);
             if (typeof packageName !== 'undefined') {
-                if (allowAppStore) resolved.push(['store', createAppStoreURL(packageName, os)]);
+                if (allowAppStore && allowScheme) resolved.push(['store', createAppStoreURL(packageName, os)]);
                 if (allowWebStore) resolved.push(['store', createWebStoreURL(packageName, os)]);
             }
 
@@ -871,8 +926,10 @@ function resolveOptions(option: AppOpenOptions): [[AppOpenedBy, URLStringOrFallb
             fallback = stripURL(option.ios.fallback);
             bundleId = option.ios.bundleId;
             trackId = option.ios.trackId;
+            assumeAllowedInApp = option.ios.assumeAllowedInApp === true;
             allowAppStore = option.ios.allowAppStore;
             allowWebStore = option.ios.allowWebStore;
+            allowScheme = canOpenScheme(assumeAllowedInApp);
             timeout = option.ios.timeout;
 
             // bundle id ⭢ track id
@@ -882,11 +939,11 @@ function resolveOptions(option: AppOpenOptions): [[AppOpenedBy, URLStringOrFallb
             if (typeof timeout === 'undefined') timeout = IOS_DEFAULT_TIMEOUT;
 
             // universal ⭢ scheme ⭢ fallback ⭢ app store ⭢ web store
-            if (typeof universal !== 'undefined' && canOpenUniversal()) resolved.push(['universal', universal]);
-            if (typeof scheme !== 'undefined') resolved.push(['scheme', scheme]);
+            if (typeof universal !== 'undefined' && canOpenUniversal(assumeAllowedInApp)) resolved.push(['universal', universal]);
+            if (typeof scheme !== 'undefined' && allowScheme) resolved.push(['scheme', scheme]);
             if (typeof fallback !== 'undefined') resolved.push(['fallback', fallback]);
             if (typeof trackId !== 'undefined') {
-                if (allowAppStore) resolved.push(['store', createAppStoreURL(trackId, os)]);
+                if (allowAppStore && allowScheme) resolved.push(['store', createAppStoreURL(trackId, os)]);
                 if (allowWebStore) resolved.push(['store', createWebStoreURL(trackId, os)]);
             }
 
@@ -994,16 +1051,84 @@ function canOpenIntent(): boolean {
     // Sources:     https://forums.opera.com/topic/11318
     if (browser === 'opera' && PlatformKit.compareVersion(version, '14.0') < 0) return false;
 
-    // Browser:     Facebook / Instagram / WeChat / TicTok in-app browsers
+    // Browser:     WeChat / QQ / Qzone / Baidu / Weibo (Android in-app browsers)
+    // Bug:         `intent://` has no chance to launch in these webviews; the Weibo partner whitelist covers scheme / universal link only, not intent.
+    // Rationale:   See isFullyBlockedInAppBrowser and isPartnerAppOnly — the single sources of truth for these environments.
+    // Sources:     https://www.redream.cn/2023/11/29/h5%E5%94%A4%E8%B5%B7app/
+    if (isFullyBlockedInAppBrowser() || isPartnerAppOnly()) return false;
+
+    // Browser:     Facebook / Instagram / TikTok in-app browsers
     // Version:
-    // Bug:
-    // Rationale:
+    // Bug:         `intent://` links are blocked; evidence is intent-specific, so custom schemes are NOT gated by this check.
+    // Rationale:   WeChat was moved to isFullyBlockedInAppBrowser (full block: scheme + intent + market) and removed from this tail to keep a single source of truth.
     // Sources:     https://developers.facebook.com/community/threads/470205278761649
-    return !(/(?:fban\/fbios|fb_iab\/fb4a)(?!.+fbav)|;fbav\/[\w.]+;/i.test(PlatformKit.userAgent) || /instagram[\/ ][-\w.]+/i.test(PlatformKit.userAgent) || /micromessenger\/([\w.]+)/i.test(PlatformKit.userAgent) || /musical_ly(?:.+app_?version\/|_)[\w.]+/i.test(PlatformKit.userAgent) || /ultralite app_version\/[\w.]+/i.test(PlatformKit.userAgent));
+    return !(/(?:fban\/fbios|fb_iab\/fb4a)(?!.+fbav)|;fbav\/[\w.]+;/i.test(PlatformKit.userAgent) || /instagram[\/ ][-\w.]+/i.test(PlatformKit.userAgent) || /musical_ly(?:.+app_?version\/|_)[\w.]+/i.test(PlatformKit.userAgent) || /ultralite app_version\/[\w.]+/i.test(PlatformKit.userAgent));
 }
 
-function canOpenUniversal(): boolean {
-    return PlatformKit.os.name === 'ios' && PlatformKit.compareVersion(PlatformKit.os.version, '9.0') >= 0;
+function canOpenUniversal(assumeAllowedInApp: boolean = false): boolean {
+    if (PlatformKit.os.name !== 'ios' || PlatformKit.compareVersion(PlatformKit.os.version, '9.0') < 0) return false;
+
+    // Partner-gated environments (Weibo): bypassable only by declared partnership; hard blocks below are never bypassed
+    if (isPartnerAppOnly() && !assumeAllowedInApp) return false;
+
+    const userAgent: string = PlatformKit.userAgent;
+
+    // Browser:     WeChat (iOS in-app browser)
+    // Version:     v < 7.0.5
+    // Bug:         Universal Links inside the WeChat webview do not launch third-party apps; 7.0.5 lifted the restriction.
+    // Rationale:   Originally observed by callapp-lib (2019); re-confirmed by 2023 field reports stating Safari supports UL,
+    //              WeChat supports it from 7.0.5, while UC/QQ browsers still do not. Note that a Universal Link only triggers
+    //              when it is cross-domain relative to the current page — same-domain links are treated as in-page navigation by iOS.
+    // Sources:     https://www.redream.cn/2023/11/29/h5%E5%94%A4%E8%B5%B7app/
+    const wechat: RegExpMatchArray | null = userAgent.match(/micromessenger\/(\d+(?:\.\d+)*)/i);
+
+    if (wechat !== null && PlatformKit.compareVersion(wechat[1], '7.0.5') < 0) return false;
+
+    // Browser:     QQ (iOS) / QQBrowser / UC Browser
+    // Version:
+    // Bug:         Universal Links navigate to the fallback website instead of launching the target app.
+    // Rationale:   QQ app blocked UL since 2018-12-23 and QQBrowser since 2019-05-01 (callapp-lib field notes); UC and QQ browsers are still reported as unsupported as of 2023.
+    // Sources:     https://www.redream.cn/2023/11/29/h5%E5%94%A4%E8%B5%B7app/
+    if (/ qq\/[\d.]+/i.test(userAgent) || /m?qqbrowser\/[\d.]+/i.test(userAgent) || /ucbrowser\/[\d.]+/i.test(userAgent)) return false;
+
+    // Browser:     Qzone (iOS in-app browser)
+    // Version:
+    // Bug:         Universal Links are blocked; no partner escape hatch is known (unlike Weibo — see isPartnerAppOnly).
+    // Rationale:   Based on callapp-lib observations (2019); no independent re-verification found after 2019, so we conservatively keep it blocked.
+    // Sources:     https://github.com/suanmei/callapp-lib/blob/master/src/index.ts
+    return !/qzone\/.*_qz_[\d.]+/i.test(userAgent);
+}
+
+function canOpenScheme(assumeAllowedInApp: boolean = false): boolean {
+    const os: OS = PlatformKit.os.name;
+
+    if (os === 'android') return !isFullyBlockedInAppBrowser() && (!isPartnerAppOnly() || assumeAllowedInApp);
+    if (os === 'ios') return !/micromessenger\/[\w.]+/i.test(PlatformKit.userAgent) && (!isPartnerAppOnly() || assumeAllowedInApp);
+
+    // No in-app scheme blocklist evidence on windows / macos
+    return true;
+}
+
+function isFullyBlockedInAppBrowser(): boolean {
+    // Android-only judgment: on iOS, WeChat >= 7.0.5 allows Universal Links (see canOpenUniversal)
+    if (PlatformKit.os.name !== 'android') return false;
+
+    const userAgent: string = PlatformKit.userAgent;
+
+    // Browser:     WeChat / QQ / Qzone / Baidu (Android in-app browsers)
+    // Bug:         Custom schemes, intent:// and market:// are all blocked (whitelist-only webviews), so every non-https candidate burns its timeout without any chance of launching.
+    // Rationale:   callapp-lib routes these environments straight to the fallback URL on Android; 2023 field reports confirm all Android launch methods remain banned inside WeChat. Weibo is partner-gated rather than fully blocked — see isPartnerAppOnly.
+    // Sources:     https://www.redream.cn/2023/11/29/h5%E5%94%A4%E8%B5%B7app/
+    return /micromessenger\/[\w.]+/i.test(userAgent) || / qq\/[\d.]+/i.test(userAgent) || /qzone\/.*_qz_[\d.]+/i.test(userAgent) || /baiduboxapp\/[\d.]+/i.test(userAgent);
+}
+
+function isPartnerAppOnly(): boolean {
+    // Browser:     Weibo (iOS & Android in-app browser)
+    // Version:
+    // Bug:         Launches are whitelist-gated: only apps registered as Weibo partners can open via scheme / universal link; non-partner apps are routed straight to the store (iOS) or fallback (Android).
+    // Rationale:   callapp-lib models this as the `isSupportWeibo` opt-in — `Browser.isWeibo && !isSupportWeibo` appears in both its iOS and Android branches, and Weibo is the only environment given a partner escape hatch there. Partnership cannot be detected at runtime; callers declare it via AppInfo.assumeAllowedInApp.
+    // Sources:     https://github.com/suanmei/callapp-lib/blob/master/src/index.ts
+    return /weibo.*weibo__[\d.]+/i.test(PlatformKit.userAgent);
 }
 
 function canOpenSetting(): boolean {
@@ -1125,6 +1250,19 @@ function escapeURIComponentMailAddressString(value: string): string {
 
 function encodeMailBody(value: string): string {
     return escapeURIComponentString(value.replace(/\r\n|\n|\r/g, '\r\n'));
+}
+
+function encodeMapValue(value: string | [number, number]): string {
+    if (isArray(value)) return value[0] + ',' + value[1];
+
+    return escapeURIComponentString(value);
+}
+
+function encodeBingRoutePoint(value: string | [number, number] | undefined): string {
+    if (typeof value === 'undefined') return '';
+    if (isArray(value)) return 'pos.' + value[0] + '_' + value[1];
+
+    return escapeURIComponentString(value);
 }
 
 function toArray(value: string | string[] | undefined): string[] {
@@ -1407,13 +1545,14 @@ const LaunchKit: LaunchKitInstance = {
             return Promise.reject(error);
         }
 
-        const tried: string[] = [];
         const urls: [AppOpenedBy, URLStringOrFallback][] = resolved[0];
         const timeout: number = resolved[1];
 
         if (urls.length === 0) return Promise.reject(new Error('No openable URL candidates were resolved for the current OS ("' + PlatformKit.os.name + '"). Provide at least one of: scheme, intent, universal, fallback, or store id for this platform.'));
 
         return new Promise(function (resolve: (value: AppOpenedBy) => void, reject: (urlOpenError: Error) => void): Promise<void> | void {
+            const tried: string[] = [];
+
             function openURLSequential(index: number = 0): Promise<void> | void {
                 if (index >= urls.length) return reject(new Error('Failed to open the application using all available URLs.\n\n' + 'Attempted URLs:\n' + joining(tried, undefined, '\n↓\n')));
 
@@ -1492,6 +1631,112 @@ const LaunchKit: LaunchKitInstance = {
         if (params.length > 0) url += '?' + joining(params, undefined, '&');
 
         return openURL(0, url, getDefaultTimeout());
+    },
+
+    map(options: MapOptions = {}): Promise<void> {
+        const params: string[] = [];
+        const urls: URLStringOrFallback[] = [];
+        let url: string = '';
+
+        switch (PlatformKit.os.name) {
+            case 'android':
+                if (typeof options.coordinate !== 'undefined') {
+                    url = 'geo:' + options.coordinate[0] + ',' + options.coordinate[1];
+                } else if (typeof options.query !== 'undefined') {
+                    url = 'geo:0,0';
+                    params.push('q=' + escapeURIComponentString(options.query));
+                } else {
+                    url = 'geo:0,0';
+                }
+
+                if (typeof options.zoom !== 'undefined') params.push('z=' + options.zoom);
+                if (params.length > 0) url = url + '?' + joining(params, undefined, '&');
+
+                urls.push(url);
+
+                break;
+            case 'ios':
+            case 'macos':
+                if (typeof options.directions !== 'undefined') {
+                    if (typeof options.directions.destination !== 'undefined') params.push('daddr=' + encodeMapValue(options.directions.destination));
+                    if (typeof options.directions.origin !== 'undefined') params.push('saddr=' + encodeMapValue(options.directions.origin));
+                } else if (typeof options.coordinate !== 'undefined') {
+                    params.push('ll=' + options.coordinate[0] + ',' + options.coordinate[1]);
+
+                    if (typeof options.label !== 'undefined') params.push('q=' + escapeURIComponentString(options.label));
+                } else if (typeof options.query !== 'undefined') {
+                    params.push('q=' + escapeURIComponentString(options.query));
+                }
+
+                if (typeof options.zoom !== 'undefined') params.push('z=' + options.zoom);
+
+                urls.push('maps://?' + joining(params, undefined, '&'));
+
+                break;
+            case 'windows':
+                if (typeof options.directions !== 'undefined') {
+                    params.push('rtp=' + encodeBingRoutePoint(options.directions.origin) + '~' + encodeBingRoutePoint(options.directions.destination));
+                } else if (typeof options.coordinate !== 'undefined') {
+                    params.push('cp=' + options.coordinate[0] + '~' + options.coordinate[1]);
+
+                    if (typeof options.label !== 'undefined') params.push('q=' + escapeURIComponentString(options.label));
+                } else if (typeof options.query !== 'undefined') {
+                    params.push('where=' + escapeURIComponentString(options.query));
+                }
+
+                if (typeof options.zoom !== 'undefined') params.push('lvl=' + options.zoom);
+
+                urls.push('bingmaps:?' + joining(params, undefined, '&'));
+        }
+
+        if (typeof options.fallback !== 'undefined') {
+            urls.push(stripURL(options.fallback));
+        } else {
+            const params: string[] = ['api=1'];
+
+            if (typeof options.directions !== 'undefined') {
+                params.push('destination=' + encodeMapValue(options.directions.destination));
+
+                if (typeof options.directions.origin !== 'undefined') params.push('origin=' + encodeMapValue(options.directions.origin));
+
+                urls.push('https://www.google.com/maps/dir/?' + joining(params, undefined, '&'));
+            } else {
+                if (typeof options.coordinate !== 'undefined') params.push('query=' + options.coordinate[0] + ',' + options.coordinate[1]);
+                else if (typeof options.query !== 'undefined') params.push('query=' + escapeURIComponentString(options.query));
+                if (typeof options.zoom !== 'undefined') params.push('zoom=' + options.zoom);
+
+                urls.push('https://www.google.com/maps/search/?' + joining(params, undefined, '&'));
+            }
+        }
+
+        return new Promise(function (resolve: () => void, reject: (urlOpenError: Error) => void): Promise<void> | void {
+            const tried: string[] = [];
+
+            function openURLSequential(index: number = 0): Promise<void> | void {
+                if (index >= urls.length) return reject(new Error('Failed to open a map using all available URLs.\n\nAttempted URLs:\n' + joining(tried, undefined, '\n↓\n')));
+
+                const url: URLStringOrFallback = urls[index];
+
+                if (typeof url === 'string') {
+                    tried[index] = url;
+
+                    return openURL(index, url, getDefaultTimeout())
+                        .then(function (): void {
+                            resolve();
+                        })
+                        .catch(function (): void {
+                            openURLSequential(index + 1);
+                        });
+                } else {
+                    tried[index] = '[function fallback]';
+
+                    url();
+                    resolve();
+                }
+            }
+
+            return openURLSequential();
+        });
     },
 
     filepicker(options: FilepickerOptions = {}): Promise<File[]> {
@@ -1601,7 +1846,7 @@ const LaunchKit: LaunchKitInstance = {
             function openURLSequential(index: number = 0): Promise<void> | void {
                 if (index >= urls.length) return reject(new Error('Failed to open the "' + type + '" settings pane using all available URLs.\n\nAttempted URLs:\n' + joining(urls, undefined, '\n↓\n')));
 
-                return openURL(index, urls[index], SETTING_DEFAULT_TIMEOUT)
+                return openURL(index, urls[index], DEFAULT_TIMEOUT)
                     .then(function (): void {
                         resolve();
                     })
