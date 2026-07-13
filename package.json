@@ -1,6 +1,6 @@
 {
   "name": "web-launch-kit",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "TypeScript library for launching external apps and communication intents from the web — deep links / custom schemes, tel, sms, mailto, maps, a file picker, and system-settings deep links, with graceful store/web fallbacks.",
   "author": "Park Jungyoung <qkrwnss0509@gmail.com> (https://github.com/pjy0509)",
   "type": "module",
@@ -64,6 +64,7 @@
     "tslib": "^2.8.1",
     "typescript": "^5.9.3",
     "web-locale-kit": "^0.0.4",
-    "web-platform-kit": "^0.0.4"
+    "web-platform-kit": "^0.0.4",
+    "web-event-kit": "^0.0.1"
   }
 }

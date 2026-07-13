@@ -1,9 +1,9 @@
 import packageJSON from "./package.json" assert {type: 'json'};
 import PlatformKit, {Browsers, type OS} from 'web-platform-kit';
+import EventKit from 'web-event-kit';
 import {createHiddenElement} from "./utils/create-hidden-element";
 import {getProductId, getProductIdAsync, getTrackId, getTrackIdAsync} from "./utils/get-id";
 import {getTopmostWindow} from "./utils/get-topmost-window";
-import {addEvent, removeEvent} from "./utils/event-listener-utils";
 
 declare global {
     interface Document {
@@ -780,9 +780,9 @@ function openURL(tried: number, url: string, timeout: number): Promise<void> {
             }
 
             try {
-                removeEvent(config.blur.target, config.blur.type, onblur);
-                removeEvent(config.focus.target, config.focus.type, onfocus);
-                removeEvent(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
+                if (typeof config.blur.target !== 'undefined' && typeof config.blur.type !== 'undefined') EventKit.remove(config.blur.target, config.blur.type, onblur);
+                if (typeof config.focus.target !== 'undefined' && typeof config.focus.type !== 'undefined') EventKit.remove(config.focus.target, config.focus.type, onfocus);
+                if (typeof config.visibilitychange.target !== 'undefined' && typeof config.visibilitychange.type !== 'undefined') EventKit.remove(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
             } catch (_: unknown) {
                 // cross-origin window
             }
@@ -819,8 +819,8 @@ function openURL(tried: number, url: string, timeout: number): Promise<void> {
                 timeoutId = undefined;
             }
 
-            removeEvent(config.blur.target, config.blur.type, onblur);
-            addEvent(config.focus.target, config.focus.type, onfocus);
+            if (typeof config.blur.target !== 'undefined' && typeof config.blur.type !== 'undefined') EventKit.remove(config.blur.target, config.blur.type, onfocus);
+            if (typeof config.focus.target !== 'undefined' && typeof config.focus.type !== 'undefined') EventKit.add(config.focus.target, config.focus.type, onfocus);
         }
 
         function onfocus(): void {
@@ -836,8 +836,8 @@ function openURL(tried: number, url: string, timeout: number): Promise<void> {
             done(false);
         }, timeout);
 
-        addEvent(config.blur.target, config.blur.type, onblur);
-        addEvent(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
+        if (typeof config.blur.target !== 'undefined' && typeof config.blur.type !== 'undefined') EventKit.add(config.blur.target, config.blur.type, onblur);
+        if (typeof config.visibilitychange.target !== 'undefined' && typeof config.visibilitychange.type !== 'undefined') EventKit.add(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
 
         if (!hasFocus(topDocument)) restoreFocus();
 
@@ -1427,10 +1427,10 @@ function resolveFile(module: HTMLInputElement | Promise<FileSystemDirectoryHandl
             };
         } else {
             module.onclick = function (): void {
-                addEvent(config.focus.target, config.focus.type, onfocus);
-                addEvent(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
+                if (typeof config.focus.target !== 'undefined' && typeof config.focus.type !== 'undefined') EventKit.add(config.focus.target, config.focus.type, onfocus);
+                if (typeof config.visibilitychange.target !== 'undefined' && typeof config.visibilitychange.type !== 'undefined') EventKit.add(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
                 globalThis.setTimeout(function (): void {
-                    addEvent(topDocument, 'click', onclick);
+                    EventKit.add(topDocument, 'click', onclick);
                 }, 100);
 
                 CLEANUP_INPUT_ELEMENT = function (): void {
@@ -1443,9 +1443,9 @@ function resolveFile(module: HTMLInputElement | Promise<FileSystemDirectoryHandl
             CLEANUP_INPUT_ELEMENT = null;
 
             try {
-                removeEvent(config.focus.target, config.focus.type, onfocus);
-                removeEvent(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
-                removeEvent(topDocument, 'click', onclick);
+                if (typeof config.focus.target !== 'undefined' && typeof config.focus.type !== 'undefined') EventKit.remove(config.focus.target, config.focus.type, onfocus);
+                if (typeof config.visibilitychange.target !== 'undefined' && typeof config.visibilitychange.type !== 'undefined') EventKit.remove(config.visibilitychange.target, config.visibilitychange.type, onvisibilitychange);
+                EventKit.remove(topDocument, 'click', onclick);
             } catch (_) {
             }
         }
